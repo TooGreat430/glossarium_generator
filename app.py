@@ -2,6 +2,7 @@
 
 import io
 import re
+# import os  # dipakai blok BigQuery di bagian bawah file
 
 import pandas as pd
 import streamlit as st
@@ -68,6 +69,21 @@ if uploaded:
         st.error(f"Kolom input wajib tidak ditemukan: {', '.join(missing)}")
         st.stop()
 
+    # --- Opsional: lewati baris yang kolom output-nya sudah terisi -----------
+    # Aktifkan blok ini kalau file input SUDAH memuat kolom output yang sebagian
+    # terisi (mis. domain Funding yang glossary-nya sudah dikerjakan), sehingga
+    # hanya baris yang benar-benar kosong yang dikirim ke Gemini.
+    # Tidak aktif karena file input saat ini tidak memuat kolom output sama sekali.
+    #
+    # raw_cols = {_normalize(c): c for c in raw.columns}
+    # existing = [raw_cols[_normalize(c)] for c in OUTPUT_COLS if _normalize(c) in raw_cols]
+    # if existing:
+    #     filled = raw[existing].fillna("").astype(str).apply(
+    #         lambda row: any(v.strip() for v in row), axis=1
+    #     )
+    #     st.info(f"{int(filled.sum())} baris sudah terisi, dilewati.")
+    #     df = df.loc[~filled].reset_index(drop=True)
+
     st.success(f"{len(df)} baris terbaca.")
     st.dataframe(df.head(10), use_container_width=True)
 
@@ -113,4 +129,33 @@ if "result" in st.session_state:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
-# TODO: simpan hasil ke BigQuery
+    # --- Opsional: simpan hasil ke BigQuery sebagai master data glossary -----
+    # Belum diaktifkan. Untuk mengaktifkan:
+    #   1. uncomment blok di bawah ini
+    #   2. uncomment `google-cloud-bigquery[pandas]` di requirements.txt
+    #   3. uncomment `import os` di bagian atas file ini
+    #   4. deploy ulang (image harus di-build ulang untuk install dependency baru)
+    #   5. beri service account Cloud Run role roles/bigquery.dataEditor
+    #   6. buat dataset tujuannya lebih dulu (BigQuery tidak bikin otomatis)
+    #
+    # from google.cloud import bigquery
+    #
+    # BQ_TABLE = f"{os.environ['GCP_PROJECT']}.glossary.business_glossary"
+    #
+    # if st.button("Simpan ke BigQuery"):
+    #     # Nama kolom seperti "Domain/Glossaries name" tidak valid di BigQuery,
+    #     # jadi disanitasi jadi huruf kecil + underscore lebih dulu.
+    #     bq_df = result.rename(
+    #         columns=lambda c: re.sub(r"[^0-9a-zA-Z_]+", "_", c).strip("_").lower()
+    #     )
+    #     bq = bigquery.Client(project=os.environ["GCP_PROJECT"])
+    #     job = bq.load_table_from_dataframe(
+    #         bq_df,
+    #         BQ_TABLE,
+    #         job_config=bigquery.LoadJobConfig(
+    #             autodetect=True,
+    #             write_disposition="WRITE_APPEND",  # WRITE_TRUNCATE kalau mau timpa
+    #         ),
+    #     )
+    #     job.result()
+    #     st.success(f"{job.output_rows} baris tersimpan ke {BQ_TABLE}")

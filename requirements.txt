@@ -2,3 +2,6 @@ streamlit
 pandas
 openpyxl
 google-genai
+
+# Aktifkan bersama blok BigQuery di app.py
+# google-cloud-bigquery[pandas]
