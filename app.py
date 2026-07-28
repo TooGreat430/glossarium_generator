@@ -6,7 +6,8 @@ import re
 import pandas as pd
 import streamlit as st
 
-from generator import INPUT_COLS, OUTPUT_COLS, generate_glossary
+from generator import generate_glossary
+from prompts import INPUT_COLS, OUTPUT_COLS
 
 REQUIRED_COLS = ["Domain/Glossaries name", "Logical Name", "Table Name", "column_name"]
 
