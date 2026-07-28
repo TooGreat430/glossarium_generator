@@ -26,15 +26,18 @@ def _client():
     )
 
 
-def _row_payload(row):
-    return {col: _clean(row.get(col, "")) for col in INPUT_COLS}
+def _row_payload(row_id, row):
+    """Kolom input + row_id sebagai kunci pemetaan hasil ke baris asal."""
+    payload = {"row_id": row_id}
+    payload.update({col: _clean(row.get(col, "")) for col in INPUT_COLS})
+    return payload
 
 
-def _call_batch(client, rows):
-    """Call Gemini once for a batch of rows; raises on definitive failure."""
+def _call_batch(client, indices, rows):
+    """Call Gemini once for a batch; return {row_id: item}. Raises on failure."""
     resp = client.models.generate_content(
         model=MODEL,
-        contents=build_prompt([_row_payload(row) for row in rows]),
+        contents=build_prompt([_row_payload(i, row) for i, row in zip(indices, rows)]),
         config=types.GenerateContentConfig(
             temperature=0.2,
             response_mime_type="application/json",
@@ -42,9 +45,19 @@ def _call_batch(client, rows):
         ),
     )
     data = json.loads(resp.text)
-    if not isinstance(data, list) or len(data) != len(rows):
-        raise ValueError(f"expected {len(rows)} objects, got {len(data) if isinstance(data, list) else type(data)}")
-    return data
+    if not isinstance(data, list):
+        raise ValueError(f"expected a JSON array, got {type(data).__name__}")
+
+    # Petakan berdasarkan row_id, bukan urutan array, supaya hasil tidak bisa
+    # nyangkut ke baris lain kalau Gemini mengubah urutan atau melewatkan baris.
+    by_id = {}
+    for item in data:
+        if isinstance(item, dict) and item.get("row_id") is not None:
+            by_id[int(item["row_id"])] = item
+    missing = [i for i in indices if i not in by_id]
+    if missing:
+        raise ValueError(f"row_id tidak lengkap di response, hilang: {missing}")
+    return by_id
 
 
 def _process_batch(client, indices, rows):
@@ -52,8 +65,8 @@ def _process_batch(client, indices, rows):
     last_err = None
     for attempt in range(MAX_RETRIES):
         try:
-            data = _call_batch(client, rows)
-            return indices, [_postprocess(item, row) for item, row in zip(data, rows)], None
+            by_id = _call_batch(client, indices, rows)
+            return indices, [_postprocess(by_id[i], row) for i, row in zip(indices, rows)], None
         except Exception as exc:  # noqa: BLE001 - satu baris gagal tidak boleh mematikan job
             last_err = exc
             if attempt < MAX_RETRIES - 1:
