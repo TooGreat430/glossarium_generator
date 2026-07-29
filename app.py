@@ -12,6 +12,29 @@ from prompts import INPUT_COLS, OUTPUT_COLS
 
 REQUIRED_COLS = ["Domain/Glossaries name", "Logical Name", "Table Name", "column_name"]
 
+# Urutan dan header kolom di file Excel hasil akhir.
+# Kunci = nama kolom internal, nilai = header yang ditulis ke Excel.
+EXPORT_COLS = {
+    "No.": "No.",
+    "Domain/Glossaries name": "Domain/Glossaries name",
+    "Logical Name": "Logical Name",
+    "Table Name": "Table Name",
+    "column_name": "column_name",
+    "category_terminology": "category_terminology",
+    "terminologi": "Terminologi",
+    "Description": "Description",
+    "related_terms": "related_terms",
+    "synonym_terms": "synonym_terms",
+    "labels": "labels",
+    "contacts": "contacts",
+    "overview": "overview",
+    "data_element": "Data element",
+}
+
+# Gagal cepat kalau nanti ada kolom output baru yang lupa didaftarkan di atas,
+# supaya kolomnya tidak diam-diam hilang dari Excel hasil.
+assert set(OUTPUT_COLS) <= set(EXPORT_COLS), "ada kolom output yang belum masuk EXPORT_COLS"
+
 # key = nama kolom Excel yang sudah dinormalisasi (huruf kecil, tanpa non-alfanumerik)
 COLUMN_MAP = {
     "domainglossariesname": "Domain/Glossaries name",
@@ -46,6 +69,13 @@ def _map_columns(df):
     if "Description" not in out.columns and not missing:
         out["Description"] = ""
     return out.fillna("").astype(str), missing
+
+
+def _reorder(df):
+    """Susun kolom sesuai urutan template Excel hasil akhir, plus nomor urut."""
+    out = df.copy()
+    out.insert(0, "No.", list(range(1, len(out) + 1)))
+    return out[list(EXPORT_COLS)].rename(columns=EXPORT_COLS)
 
 
 def _to_excel(df):
@@ -120,11 +150,13 @@ if "result" in st.session_state:
             + "\n".join(f"- {e}" for e in errors[:20])
         )
 
+    final = _reorder(result)
+
     st.subheader("Hasil")
-    st.dataframe(result[INPUT_COLS + OUTPUT_COLS].head(50), use_container_width=True)
+    st.dataframe(final.head(50), use_container_width=True)
     st.download_button(
         "Download hasil (.xlsx)",
-        data=_to_excel(result),
+        data=_to_excel(final),
         file_name="glossary_result.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
