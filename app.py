@@ -1,99 +1,22 @@
 """Streamlit UI untuk Business Glossary Generator."""
 
-import io
-import re
-# import os  # dipakai blok BigQuery di bagian bawah file
-
 import pandas as pd
 import streamlit as st
 
+import config
 from generator import generate_glossary
-from prompts import INPUT_COLS, OUTPUT_COLS
+from preprocessing import map_columns
+from postprocessing import reorder_for_export, to_excel
 
-REQUIRED_COLS = ["Domain/Glossaries name", "Logical Name", "Table Name", "column_name"]
-
-# Urutan dan header kolom di file Excel hasil akhir.
-# Kunci = nama kolom internal, nilai = header yang ditulis ke Excel.
-EXPORT_COLS = {
-    "No.": "No.",
-    "Domain/Glossaries name": "Domain/Glossaries name",
-    "Logical Name": "Logical Name",
-    "Table Name": "Table Name",
-    "column_name": "column_name",
-    "category_terminology": "category_terminology",
-    "terminologi": "Terminologi",
-    "Description": "Description",
-    "related_terms": "related_terms",
-    "synonym_terms": "synonym_terms",
-    "labels": "labels",
-    "contacts": "contacts",
-    "overview": "overview",
-    "data_element": "Data element",
-}
-
-# Gagal cepat kalau nanti ada kolom output baru yang lupa didaftarkan di atas,
-# supaya kolomnya tidak diam-diam hilang dari Excel hasil.
-assert set(OUTPUT_COLS) <= set(EXPORT_COLS), "ada kolom output yang belum masuk EXPORT_COLS"
-
-# key = nama kolom Excel yang sudah dinormalisasi (huruf kecil, tanpa non-alfanumerik)
-COLUMN_MAP = {
-    "domainglossariesname": "Domain/Glossaries name",
-    "domainglossaryname": "Domain/Glossaries name",
-    "glossariesname": "Domain/Glossaries name",
-    "domain": "Domain/Glossaries name",
-    "logicalname": "Logical Name",
-    "logical": "Logical Name",
-    "tablename": "Table Name",
-    "table": "Table Name",
-    "columnname": "column_name",
-    "column": "column_name",
-    "physicalname": "column_name",
-    "description": "Description",
-    "deskripsi": "Description",
-}
-
-
-def _normalize(name):
-    return re.sub(r"[^a-z0-9]", "", str(name).lower())
-
-
-def _map_columns(df):
-    """Return df dengan kolom kanonik + daftar kolom wajib yang hilang."""
-    mapped = {}
-    for col in df.columns:
-        canonical = COLUMN_MAP.get(_normalize(col))
-        if canonical and canonical not in mapped:
-            mapped[canonical] = df[col]
-    missing = [col for col in REQUIRED_COLS if col not in mapped]
-    out = pd.DataFrame({col: mapped[col] for col in INPUT_COLS if col in mapped})
-    if "Description" not in out.columns and not missing:
-        out["Description"] = ""
-    return out.fillna("").astype(str), missing
-
-
-def _reorder(df):
-    """Susun kolom sesuai urutan template Excel hasil akhir, plus nomor urut."""
-    out = df.copy()
-    out.insert(0, "No.", list(range(1, len(out) + 1)))
-    return out[list(EXPORT_COLS)].rename(columns=EXPORT_COLS)
-
-
-def _to_excel(df):
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="glossary")
-    return buffer.getvalue()
-
-
-st.set_page_config(page_title="Business Glossary Generator", layout="wide")
-st.title("Business Glossary Generator")
-st.caption("Upload data dictionary (.xlsx), Gemini 2.5 Flash mengisi 8 kolom glossary.")
+st.set_page_config(page_title=config.PAGE_TITLE, layout=config.PAGE_LAYOUT)
+st.title(config.PAGE_TITLE)
+st.caption(config.PAGE_CAPTION)
 
 uploaded = st.file_uploader("File Excel data dictionary", type=["xlsx"])
 
 if uploaded:
     raw = pd.read_excel(uploaded)
-    df, missing = _map_columns(raw)
+    df, missing = map_columns(raw)
 
     if missing:
         st.error(f"Kolom input wajib tidak ditemukan: {', '.join(missing)}")
@@ -101,21 +24,19 @@ if uploaded:
 
     # --- Opsional: lewati baris yang kolom output-nya sudah terisi -----------
     # Aktifkan blok ini kalau file input SUDAH memuat kolom output yang sebagian
-    # terisi (mis. domain Funding yang glossary-nya sudah dikerjakan), sehingga
-    # hanya baris yang benar-benar kosong yang dikirim ke Gemini.
+    # terisi, sehingga hanya baris yang benar-benar kosong yang dikirim ke Gemini.
     # Tidak aktif karena file input saat ini tidak memuat kolom output sama sekali.
+    # Logikanya ada di preprocessing.filled_row_mask().
     #
-    # raw_cols = {_normalize(c): c for c in raw.columns}
-    # existing = [raw_cols[_normalize(c)] for c in OUTPUT_COLS if _normalize(c) in raw_cols]
-    # if existing:
-    #     filled = raw[existing].fillna("").astype(str).apply(
-    #         lambda row: any(v.strip() for v in row), axis=1
-    #     )
+    # from preprocessing import filled_row_mask
+    #
+    # filled = filled_row_mask(raw)
+    # if filled.any():
     #     st.info(f"{int(filled.sum())} baris sudah terisi, dilewati.")
     #     df = df.loc[~filled].reset_index(drop=True)
 
     st.success(f"{len(df)} baris terbaca.")
-    st.dataframe(df.head(10), use_container_width=True)
+    st.dataframe(df.head(config.PREVIEW_ROWS_INPUT), use_container_width=True)
 
     limit = st.number_input(
         "Batasi jumlah baris (untuk testing, 0 = semua baris)",
@@ -131,7 +52,7 @@ if uploaded:
         with st.status(f"Generate {len(work_df)} baris...", expanded=True) as status:
             def on_progress(done, total):
                 progress.progress(done / total)
-                rows_done = min(done * 5, len(work_df))
+                rows_done = min(done * config.BATCH_SIZE, len(work_df))
                 status.update(label=f"Batch {done}/{total} selesai ({rows_done}/{len(work_df)} baris)")
 
             result, errors = generate_glossary(work_df, progress_cb=on_progress)
@@ -146,18 +67,19 @@ if "result" in st.session_state:
 
     if errors:
         st.warning(
-            f"{len(errors)} batch gagal setelah 3x retry, kolom output baris tersebut dikosongkan:\n\n"
-            + "\n".join(f"- {e}" for e in errors[:20])
+            f"{len(errors)} batch gagal setelah {config.MAX_RETRIES}x retry, "
+            "kolom output baris tersebut dikosongkan:\n\n"
+            + "\n".join(f"- {e}" for e in errors[:config.MAX_ERRORS_SHOWN])
         )
 
-    final = _reorder(result)
+    final = reorder_for_export(result)
 
     st.subheader("Hasil")
-    st.dataframe(final.head(50), use_container_width=True)
+    st.dataframe(final.head(config.PREVIEW_ROWS_RESULT), use_container_width=True)
     st.download_button(
         "Download hasil (.xlsx)",
-        data=_to_excel(final),
-        file_name="glossary_result.xlsx",
+        data=to_excel(final),
+        file_name=config.DOWNLOAD_FILENAME,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
@@ -165,29 +87,25 @@ if "result" in st.session_state:
     # Belum diaktifkan. Untuk mengaktifkan:
     #   1. uncomment blok di bawah ini
     #   2. uncomment `google-cloud-bigquery[pandas]` di requirements.txt
-    #   3. uncomment `import os` di bagian atas file ini
-    #   4. deploy ulang (image harus di-build ulang untuk install dependency baru)
-    #   5. beri service account Cloud Run role roles/bigquery.dataEditor
-    #   6. buat dataset tujuannya lebih dulu (BigQuery tidak bikin otomatis)
+    #   3. deploy ulang (image harus di-build ulang untuk install dependency baru)
+    #   4. beri service account Cloud Run role roles/bigquery.dataEditor
+    #   5. buat dataset tujuannya lebih dulu (BigQuery tidak bikin otomatis)
     #
     # from google.cloud import bigquery
     #
-    # BQ_TABLE = f"{os.environ['GCP_PROJECT']}.glossary.business_glossary"
+    # from postprocessing import sanitize_bq_columns
+    #
+    # BQ_TABLE_ID = f"{config.PROJECT_ID}.{config.BQ_DATASET}.{config.BQ_TABLE}"
     #
     # if st.button("Simpan ke BigQuery"):
-    #     # Nama kolom seperti "Domain/Glossaries name" tidak valid di BigQuery,
-    #     # jadi disanitasi jadi huruf kecil + underscore lebih dulu.
-    #     bq_df = result.rename(
-    #         columns=lambda c: re.sub(r"[^0-9a-zA-Z_]+", "_", c).strip("_").lower()
-    #     )
-    #     bq = bigquery.Client(project=os.environ["GCP_PROJECT"])
+    #     bq = bigquery.Client(project=config.PROJECT_ID)
     #     job = bq.load_table_from_dataframe(
-    #         bq_df,
-    #         BQ_TABLE,
+    #         sanitize_bq_columns(result),
+    #         BQ_TABLE_ID,
     #         job_config=bigquery.LoadJobConfig(
     #             autodetect=True,
-    #             write_disposition="WRITE_APPEND",  # WRITE_TRUNCATE kalau mau timpa
+    #             write_disposition=config.BQ_WRITE_DISPOSITION,
     #         ),
     #     )
     #     job.result()
-    #     st.success(f"{job.output_rows} baris tersimpan ke {BQ_TABLE}")
+    #     st.success(f"{job.output_rows} baris tersimpan ke {BQ_TABLE_ID}")
