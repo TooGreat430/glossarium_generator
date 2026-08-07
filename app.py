@@ -1,7 +1,5 @@
 """Streamlit UI untuk Business Glossary Generator."""
 
-#iseng tambahan buat tes knowgen ai
-
 import pandas as pd
 import streamlit as st
 
